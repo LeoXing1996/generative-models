@@ -1,19 +1,56 @@
+
 import copy
 import os.path as osp
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
+import cv2
 import numpy as np
-import PIL
 import torch
 import torch.nn.functional as F
 from diffusers.models import AutoencoderKL, UNet2DConditionModel
 from diffusers.pipelines import StableDiffusionPipeline
 from diffusers.schedulers import EulerDiscreteScheduler
 from diffusers.utils import BaseOutput
+from PIL import Image
 from transformers import CLIPTextModel, CLIPTokenizer
 
 from .unet_utils import override_forward
+
+
+def draw_points(img, src_points, tar_points):
+    """draw poitns on image,
+    src_points, tar_points: coordinates in [h, w] order.
+    """
+    is_pil = False
+    if isinstance(img, Image.Image):
+        is_pil = True
+        img = np.array(img)
+
+    for src, tar in zip(src_points, tar_points):
+        s_x, s_y = src[1] * 2, src[0] * 2
+        t_x, t_y = tar[1] * 2, tar[0] * 2
+
+        s_x, s_y = int(s_x), int(s_y)
+        t_x, t_y = int(t_x), int(t_y)
+
+        cv2.circle(img, (s_x, s_y), 10, (255, 0, 0), -1)
+        cv2.circle(img, (t_x, t_y), 10, (0, 0, 255), -1)
+
+        cv2.arrowedLine(img, (s_x, s_y), (t_x, t_y),
+                        (255, 255, 255), 4, tipLength=0.5)
+
+    if is_pil:
+        return Image.fromarray(img)
+    return img
+
+
+def write_log(info, target):
+    print(info)
+    with open(target, 'a+') as file:
+        file.write(info)
+        if not info.endswith('\n'):
+            file.write('\n')
 
 
 def point_tracking(F0, F1, handle_points, handle_points_init, r_p):
@@ -64,8 +101,8 @@ def interpolate_feature_patch(feat, y, x, r):
 
 @dataclass
 class TurboOutput(BaseOutput):
-    images: Union[List[PIL.Image.Image], np.ndarray]
-    pred_x0_list: List[PIL.Image.Image]
+    images: Union[List[Image.Image], np.ndarray]
+    pred_x0_list: List[Image.Image]
     errors: List[float]
 
     init_latent: Optional[torch.Tensor] = None
@@ -312,6 +349,7 @@ class TurboPipeline(StableDiffusionPipeline):
              super_res_h: int,
              super_res_w: int,
              save_dir: Optional[str] = None,
+             return_intermediate: bool = False,
              ):
 
         device = self._execution_device
@@ -319,6 +357,9 @@ class TurboPipeline(StableDiffusionPipeline):
         self.scheduler.set_timesteps(1, device=device)
         t = self.scheduler.timesteps[0]
 
+        intermediate = []
+
+        generator = torch.Generator()
         with torch.no_grad():
             # prepare prompt
             prompt_embeds, _ = self.encode_prompt(
@@ -343,8 +384,10 @@ class TurboPipeline(StableDiffusionPipeline):
                 interp_res_w=super_res_w,
                 layer_idx=layer_idxs
             )
+            generator.manual_seed(42)
             denoising_output = self.scheduler.step(
-                unet_output, t, init_latent, return_dict=True)
+                unet_output, t, init_latent, generator=generator,
+                return_dict=True)
             # NOTE: reset step_index
             self.scheduler._init_step_index(t)
 
@@ -367,6 +410,9 @@ class TurboPipeline(StableDiffusionPipeline):
         for idx in range(drag_steps):
             print(idx)
             with torch.autocast(device_type='cuda', dtype=torch.float16):
+                if save_dir:
+                    write_log(f'Mean: {init_latent.mean().item()}',
+                              osp.join(save_dir, 'log.txt'))
                 init_latent_scaled = self.scheduler.scale_model_input(
                     init_latent, t)
                 unet_output, F1 = self.forward_unet_feature_for_drag(
@@ -377,8 +423,10 @@ class TurboPipeline(StableDiffusionPipeline):
                     interp_res_w=super_res_w,
                     layer_idx=layer_idxs
                 )
+                generator.manual_seed(42)
                 denoising_output = self.scheduler.step(
-                    unet_output, t, init_latent, return_dict=True)
+                    unet_output, t, init_latent, generator=generator,
+                    return_dict=True)
                 self.scheduler._init_step_index(t)
                 pred_xt_1_update = denoising_output['prev_sample']
                 pred_x0_update = denoising_output['pred_original_sample']
@@ -393,6 +441,7 @@ class TurboPipeline(StableDiffusionPipeline):
                         _img = self.image_processor.postprocess(
                             _img, output_type='pil',
                             do_denormalize=do_denormalize)[0]
+                        _img = draw_points(_img, src_points, tar_points)
                         _img.save(osp.join(save_dir, f'{idx}.png'))
 
                 if idx != 0:
@@ -404,7 +453,7 @@ class TurboPipeline(StableDiffusionPipeline):
 
                 loss = 0.0
                 for i in range(len(src_points)):
-                    pi, ti = src_points[i], src_points[i]
+                    pi, ti = src_points[i], tar_points[i]
                     # skip if the distance between target and source is less than 1
                     if (ti - pi).norm() < 2.:
                         continue
@@ -425,7 +474,9 @@ class TurboPipeline(StableDiffusionPipeline):
                 loss += lam * ((pred_xt_1 - pred_xt_1_update) *
                                (1.0 - interp_mask)).abs().sum()
                 # loss += args.lam * ((init_code_orig-init_code)*(1.0-interp_mask)).abs().sum()
-                print('loss total=%f' % (loss.item()))
+                # print('loss total=%f' % (loss.item()))
+                write_log('loss total=%f' % (loss.item()),
+                          osp.join(save_dir, 'log.txt'))
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -442,9 +493,10 @@ class TurboPipeline(StableDiffusionPipeline):
                 prompt_embeds,
                 cross_attention_kwargs=None,
             )
-
+            generator.manual_seed(42)
             denoising_output = self.scheduler.step(
-                noise_pred, t, init_latent, return_dict=True)
+                noise_pred, t, init_latent, generator=generator,
+                return_dict=True)
             self.scheduler._init_step_index(t)
             # pred_x0 = denoising_output['pred_original_sample']
             prev_sample = denoising_output['prev_sample']
@@ -455,7 +507,8 @@ class TurboPipeline(StableDiffusionPipeline):
             )[0]
             do_denormalize = [True] * image_updated.shape[0]
             image_updated = self.image_processor.postprocess(
-                image_updated, output_type='pil', do_denormalize=do_denormalize)
+                image_updated, output_type='pil', do_denormalize=do_denormalize)[0]
+            image_updated = draw_points(image_updated, src_points, tar_points)
 
         return init_latent, image_updated
 

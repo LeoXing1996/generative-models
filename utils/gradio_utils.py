@@ -108,7 +108,7 @@ def drag_image(pipeline: TurboPipeline,
         osp.join(save_path, 'source_image.png')
     )
     Config(cfg_dict).dump(osp.join(save_path, 'cfg.py'))
-    return init_latent_orig, source_image
+    # return init_latent_orig, source_image
 
     init_latent_updated, img_updated = pipeline.drag(
         init_latent=init_latent_orig,
@@ -121,7 +121,13 @@ def drag_image(pipeline: TurboPipeline,
         r_m=r_m,
         r_p=r_p,
         lam=lam,
+        super_res_h=sup_res_h,
+        super_res_w=sup_res_w,
+        save_dir=save_path,
+        layer_idxs=[2, 3],
     )
+    img_updated = np.array(img_updated)
+    # make video
     return init_latent_updated, img_updated
 
 

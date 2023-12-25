@@ -52,7 +52,8 @@ def drag_image(pipeline: TurboPipeline,
                lr: float,
                drag_steps: int,
                lam: float,
-               save_root: str):
+               save_root: str,
+               is_debug: bool = False):
     now = datetime.datetime.now().strftime('%Y-%m-%d_%H:%M')
 
     save_path = osp.join(save_root, now)
@@ -108,7 +109,8 @@ def drag_image(pipeline: TurboPipeline,
         osp.join(save_path, 'source_image.png')
     )
     Config(cfg_dict).dump(osp.join(save_path, 'cfg.py'))
-    # return init_latent_orig, source_image
+    if is_debug:
+        return init_latent_orig, source_image
 
     init_latent_updated, img_updated = pipeline.drag(
         init_latent=init_latent_orig,

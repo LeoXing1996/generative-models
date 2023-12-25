@@ -377,7 +377,7 @@ class TurboPipeline(StableDiffusionPipeline):
             init_latent_scaled = self.scheduler.scale_model_input(
                 init_latent, t)
             unet_output, F0 = self.forward_unet_feature_for_drag(
-                init_latent_scaled,
+                init_latent_scaled.to(dtype=self.unet.dtype),
                 t,
                 prompt_embeds,
                 interp_res_h=super_res_h,
@@ -391,10 +391,11 @@ class TurboPipeline(StableDiffusionPipeline):
             # NOTE: reset step_index
             self.scheduler._init_step_index(t)
 
-            pred_xt_1 = denoising_output['prev_sample']
-            pred_x0 = denoising_output['pred_original_sample']
+            pred_xt_1 = denoising_output['prev_sample'].float()
+            pred_x0 = denoising_output['pred_original_sample'].float()
 
         # convert unet, latent, and other variables to fp32 since we use autocast
+        unet_ori_type = self.unet.dtype
         self.unet = self.unet.to(torch.float32)
         init_latent = init_latent.float()
         prompt_embeds = prompt_embeds.float()
@@ -510,6 +511,7 @@ class TurboPipeline(StableDiffusionPipeline):
                 image_updated, output_type='pil', do_denormalize=do_denormalize)[0]
             image_updated = draw_points(image_updated, src_points, tar_points)
 
+        self.unet = self.unet.to(unet_ori_type)
         return init_latent, image_updated
 
     def forward_unet_feature_for_drag(

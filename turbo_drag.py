@@ -10,6 +10,7 @@ parser.add_argument('--server-name', type=str, default='0.0.0.0')
 parser.add_argument('--port', type=int, default=7860)
 parser.add_argument('--share', action='store_true')
 
+parser.add_argument('--is-debug', action='store_true')
 parser.add_argument('--save-path', default='work_dirs')
 
 args = parser.parse_args()
@@ -27,6 +28,7 @@ with gr.Blocks() as app:
     init_latent = gr.State(value=None)
     pipeline = gr.State(value=None)
     save_path = gr.State(value=args.save_path)
+    is_debug = gr.State(value=args.is_debug)
 
     # general parameters
     # with gr.Row():
@@ -106,6 +108,7 @@ with gr.Blocks() as app:
                 n_pix_step_gen,
                 lam_gen,
                 save_path,
+                is_debug,
             ],
         outputs=[
             init_latent,
